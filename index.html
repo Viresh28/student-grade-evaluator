@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Python ATM Simulator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    <script defer>
+      const fetchJSON = async (url, options = {}) => {
+        const res = await fetch(url, {
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          ...options,
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Request failed");
+        return body;
+      };
+
+      document.addEventListener("DOMContentLoaded", async () => {
+        const loginSection = document.querySelector("#login-panel");
+        const dashboard = document.querySelector("#dashboard");
+        const greetings = document.querySelector("#account-holder");
+        const balanceField = document.querySelector("#balance-amount");
+        const alertBox = document.querySelector("#alert");
+        const historyList = document.querySelector("#history");
+        const modal = document.querySelector("#immersive-modal");
+        const modalAction = modal.querySelector("[data-modal-action]");
+        const modalAmount = modal.querySelector("[data-modal-amount]");
+        const modalBalance = modal.querySelector("[data-modal-balance]");
+        const modalHistory = modal.querySelector("#modal-history");
+        const modalClose = modal.querySelector("#modal-close");
+
+        const setAlert = (message, variant = "info") => {
+          alertBox.textContent = message;
+          alertBox.dataset.variant = message ? variant : "";
+        };
+
+        const renderTransactions = (container, items) => {
+          container.innerHTML = "";
+          if (!items.length) {
+            container.innerHTML = "<li>No transactions yet.</li>";
+            return;
+          }
+          items.forEach((tx) => {
+            const li = document.createElement("li");
+            const when = new Date(tx.timestamp).toLocaleString();
+            li.innerHTML = `<strong>${tx.action}</strong> <span>$${tx.amount.toFixed(
+              2
+            )}</span><em>${when}</em><small>${tx.details || ""}</small>`;
+            container.appendChild(li);
+          });
+        };
+
+        const updateTransactions = (items) => {
+          renderTransactions(historyList, items);
+        };
+
+        const openModal = () => {
+          modal.hidden = false;
+          requestAnimationFrame(() => {
+            modal.classList.add("visible");
+            document.body.classList.add("modal-open");
+          });
+        };
+
+        const closeModal = () => {
+          if (modal.hidden) return;
+          modal.classList.remove("visible");
+          document.body.classList.remove("modal-open");
+          modal.addEventListener(
+            "transitionend",
+            () => {
+              if (!modal.classList.contains("visible")) {
+                modal.hidden = true;
+              }
+            },
+            { once: true }
+          );
+        };
+
+        modalClose.addEventListener("click", closeModal);
+        modal.addEventListener("click", (event) => {
+          if (event.target === modal) closeModal();
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && !modal.hidden) closeModal();
+        });
+
+        const showFullScreenOutcome = async ({ actionLabel, amount, balance }) => {
+          modalAction.textContent = actionLabel;
+          modalAmount.textContent = amount.toFixed(2);
+          modalBalance.textContent = balance.toFixed(2);
+          openModal();
+          try {
+            const txs = await fetchJSON("/api/transactions");
+            renderTransactions(modalHistory, txs);
+            updateTransactions(txs);
+          } catch (error) {
+            modalHistory.innerHTML = `<li>${error.message}</li>`;
+          }
+        };
+
+        const refreshState = async () => {
+          try {
+            const session = await fetchJSON("/api/session");
+            if (session.authenticated) {
+              loginSection.hidden = true;
+              dashboard.hidden = false;
+              greetings.textContent = session.holder;
+              balanceField.textContent = session.balance.toFixed(2);
+              const txs = await fetchJSON("/api/transactions");
+              updateTransactions(txs);
+            } else {
+              loginSection.hidden = false;
+              dashboard.hidden = true;
+            }
+          } catch (error) {
+            setAlert(error.message, "error");
+          }
+        };
+
+        const loginInputs = {
+          account: document.querySelector('input[name="accountNumber"]'),
+          pin: document.querySelector('input[name="pin"]'),
+        };
+        let activeLoginInput = loginInputs.account;
+
+        [loginInputs.account, loginInputs.pin].forEach((input) => {
+          input.addEventListener("focus", () => {
+            activeLoginInput = input;
+          });
+        });
+
+        const amountInputs = document.querySelectorAll('[data-keypad="amount"]');
+        let activeAmountInput = amountInputs[0];
+        amountInputs.forEach((input) => {
+          input.addEventListener("focus", () => {
+            activeAmountInput = input;
+          });
+        });
+
+        document.querySelector("#login-form").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          setAlert("");
+          const formData = new FormData(e.target);
+          try {
+            const data = await fetchJSON("/api/login", {
+              method: "POST",
+              body: JSON.stringify({
+                accountNumber: formData.get("accountNumber"),
+                pin: formData.get("pin"),
+              }),
+            });
+            greetings.textContent = data.holder;
+            balanceField.textContent = data.balance.toFixed(2);
+            loginSection.hidden = true;
+            dashboard.hidden = false;
+            refreshState();
+          } catch (error) {
+            setAlert(error.message, "error");
+          }
+        });
+
+        document.querySelector("#logout").addEventListener("click", async () => {
+          await fetchJSON("/api/logout", { method: "POST" });
+          dashboard.hidden = true;
+          loginSection.hidden = false;
+          setAlert("Logged out successfully", "info");
+        });
+
+        const bindKeypad = (keypad, resolveInput) => {
+          keypad.querySelectorAll("button").forEach((btn) => {
+            btn.addEventListener("click", () => {
+              const targetInput = resolveInput();
+              if (!targetInput) return;
+              const action = btn.dataset.action;
+              if (action === "clear") {
+                targetInput.value = "";
+                return;
+              }
+              if (action === "backspace") {
+                targetInput.value = targetInput.value.slice(0, -1);
+                return;
+              }
+              const digit = btn.dataset.digit;
+              if (digit) {
+                targetInput.value = `${targetInput.value}${digit}`;
+                targetInput.dispatchEvent(new Event("input"));
+              }
+            });
+          });
+        };
+
+        document.querySelectorAll('.keypad[data-mode="login"]').forEach((keypad) => {
+          bindKeypad(keypad, () => activeLoginInput || loginInputs.account);
+        });
+
+        document.querySelectorAll('.keypad[data-mode="amount"]').forEach((keypad) => {
+          bindKeypad(keypad, () => activeAmountInput);
+        });
+
+        const actionHandlers = [
+          { form: "#deposit-form", endpoint: "/api/deposit" },
+          { form: "#withdraw-form", endpoint: "/api/withdraw" },
+        ];
+
+        actionHandlers.forEach(({ form, endpoint }) => {
+          document.querySelector(form).addEventListener("submit", async (e) => {
+            e.preventDefault();
+            setAlert("");
+            const amount = parseFloat(new FormData(e.target).get("amount"));
+            if (Number.isNaN(amount)) return setAlert("Enter a valid amount", "error");
+            try {
+              const { balance } = await fetchJSON(endpoint, {
+                method: "POST",
+                body: JSON.stringify({ amount }),
+              });
+              balanceField.textContent = balance.toFixed(2);
+              setAlert("Transaction successful", "success");
+              e.target.reset();
+              await showFullScreenOutcome({
+                actionLabel: endpoint.includes("deposit")
+                  ? "Deposit Completed"
+                  : "Withdrawal Completed",
+                amount,
+                balance,
+              });
+            } catch (error) {
+              setAlert(error.message, "error");
+            }
+          });
+        });
+
+        document.querySelector("#transfer-form").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          setAlert("");
+          const formData = new FormData(e.target);
+          const payload = {
+            receiver: formData.get("receiver"),
+            amount: parseFloat(formData.get("amount")),
+          };
+          if (!payload.receiver) return setAlert("Receiver is required", "error");
+          if (Number.isNaN(payload.amount))
+            return setAlert("Enter a valid amount", "error");
+
+          try {
+            const { balance } = await fetchJSON("/api/transfer", {
+              method: "POST",
+              body: JSON.stringify(payload),
+            });
+            balanceField.textContent = balance.toFixed(2);
+            setAlert("Transfer completed", "success");
+            e.target.reset();
+            await showFullScreenOutcome({
+              actionLabel: "Transfer Completed",
+              amount: payload.amount,
+              balance,
+            });
+          } catch (error) {
+            setAlert(error.message, "error");
+          }
+        });
+
+        refreshState();
+      });
+    </script>
+  </head>
+  <body>
+    <main class="layout">
+      <section id="login-panel" class="card">
+        <h1>ATM Login</h1>
+        <form id="login-form">
+          <label>Account Number<input name="accountNumber" required /></label>
+          <label>PIN<input name="pin" type="password" required /></label>
+          <button type="submit">Access Account</button>
+        </form>
+        <div class="keypad" data-mode="login" aria-label="On-screen keypad">
+          <button type="button" data-digit="1">1</button>
+          <button type="button" data-digit="2">2</button>
+          <button type="button" data-digit="3">3</button>
+          <button type="button" data-digit="4">4</button>
+          <button type="button" data-digit="5">5</button>
+          <button type="button" data-digit="6">6</button>
+          <button type="button" data-digit="7">7</button>
+          <button type="button" data-digit="8">8</button>
+          <button type="button" data-digit="9">9</button>
+          <button type="button" data-action="clear">Clear</button>
+          <button type="button" data-digit="0">0</button>
+          <button type="button" data-action="backspace">⌫</button>
+        </div>
+        <p class="hint">Demo accounts: 100200/1234, 200300/5678, 300400/2468</p>
+      </section>
+
+      <section id="dashboard" class="card" hidden>
+        <header class="dashboard-header">
+          <div>
+            <p class="muted">Account Holder</p>
+            <h2 id="account-holder"></h2>
+          </div>
+          <button id="logout" class="secondary">Logout</button>
+        </header>
+        <div class="balance">
+          <p class="muted">Current Balance</p>
+          <p class="amount">$<span id="balance-amount">0.00</span></p>
+          <div id="alert" role="alert"></div>
+        </div>
+
+        <div class="actions">
+          <form id="deposit-form">
+            <h3>Deposit</h3>
+            <input id="deposit-amount" data-keypad="amount" name="amount" type="number" placeholder="Amount" min="1" step="0.01" required />
+            <button type="submit">Deposit</button>
+          </form>
+          <form id="withdraw-form">
+            <h3>Withdraw</h3>
+            <input id="withdraw-amount" data-keypad="amount" name="amount" type="number" placeholder="Amount" min="1" step="0.01" required />
+            <button type="submit">Withdraw</button>
+          </form>
+          <form id="transfer-form">
+            <h3>Transfer</h3>
+            <input name="receiver" placeholder="Receiver # eg. 200300" required />
+            <input id="transfer-amount" data-keypad="amount" name="amount" type="number" placeholder="Amount" min="1" step="0.01" required />
+            <button type="submit">Transfer</button>
+          </form>
+        </div>
+
+        <div class="keypad keypad-shared" data-mode="amount" aria-label="Transaction keypad">
+          <button type="button" data-digit="1">1</button>
+          <button type="button" data-digit="2">2</button>
+          <button type="button" data-digit="3">3</button>
+          <button type="button" data-digit="4">4</button>
+          <button type="button" data-digit="5">5</button>
+          <button type="button" data-digit="6">6</button>
+          <button type="button" data-digit="7">7</button>
+          <button type="button" data-digit="8">8</button>
+          <button type="button" data-digit="9">9</button>
+          <button type="button" data-action="clear">Clear</button>
+          <button type="button" data-digit="0">0</button>
+          <button type="button" data-action="backspace">⌫</button>
+        </div>
+
+        <section>
+          <h3>Recent Transactions</h3>
+          <ul id="history"></ul>
+        </section>
+      </section>
+    </main>
+
+    <div id="immersive-modal" hidden>
+      <div class="modal-panel">
+        <button id="modal-close" aria-label="Close fullscreen view">Close ✕</button>
+        <div class="modal-banner">
+          <div class="status-icon" aria-hidden="true">✓</div>
+          <div>
+            <p class="muted">Operation</p>
+            <h1 data-modal-action>Transaction Completed</h1>
+          </div>
+        </div>
+        <div class="modal-amounts">
+          <div>
+            <p class="muted">Amount</p>
+            <p class="amount">$<span data-modal-amount>0.00</span></p>
+          </div>
+          <div>
+            <p class="muted">New Balance</p>
+            <p class="amount">$<span data-modal-balance>0.00</span></p>
+          </div>
+        </div>
+        <section>
+          <h3>Current Transactions</h3>
+          <ul id="modal-history"></ul>
+        </section>
+      </div>
+    </div>
+  </body>
+</html>
+
